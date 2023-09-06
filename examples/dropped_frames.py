@@ -3,10 +3,33 @@
 # Example of requesting a specific framerate, and measuring
 # the number of dropped frames and the actual framerate
 
-from picamera2 import Picamera2
+from picamera2 import Picamera2, MappedArray
 from picamera2.encoders import H264Encoder, Quality
 from picamera2.outputs import FfmpegOutput
 import time
+import cv2
+
+colour = (0, 255, 0)
+origin = (0, 30)
+font = cv2.FONT_HERSHEY_SIMPLEX
+scale = 1
+thickness = 2
+
+
+def get_frame_num(timestamp, duration):
+    return round((timestamp - start_timestamp) / duration) + 1
+
+
+def apply_frame_num(request):
+    """Add calculated frame number to images
+    """
+    metadata = request.get_metadata()
+    frame_num = get_frame_num(metadata["SensorTimestamp"] / 1000, metadata["FrameDuration"])
+    with MappedArray(request, "main") as m:
+        cv2.putText(m.array, f'{frame_num}', origin, font, scale, colour, thickness)
+    # Uncomment this to print the frame number and the number of Picamera2 frames
+    # picam2.frames will be lower due to dropped frames
+    # print(frame_num, picam2.frames)
 
 
 def post_callback(request):
@@ -17,14 +40,18 @@ def post_callback(request):
     if next_timestamp is not None:
         diff = int(metadata["SensorTimestamp"] / 1000 - next_timestamp)
     else:
-        start_timestamp = metadata["SensorTimestamp"]
+        start_timestamp = metadata["SensorTimestamp"] / 1000
         diff = 0
-    if metadata["SensorTimestamp"] > 0:
-        # Occasionally errors occur with timestamp, just skip these
-        next_timestamp = metadata["SensorTimestamp"] / 1000 + metadata["FrameDuration"]
-        dropped_frames += round(diff / metadata["FrameDuration"])
+
+    apply_frame_num(request)
+
+    dropped = round(diff / metadata["FrameDuration"])
+    if dropped:
+        dropped_frames += dropped
+        print(f"Dropped {dropped} frame{'s' if dropped > 1 else ''} between {get_frame_num(next_timestamp, metadata['FrameDuration'])} and {get_frame_num(metadata['SensorTimestamp'] / 1000, metadata['FrameDuration'])}")
+    next_timestamp = metadata["SensorTimestamp"] / 1000 + metadata["FrameDuration"]
     num_frames += 1
-    end_timestamp = metadata["SensorTimestamp"]
+    end_timestamp = metadata["SensorTimestamp"] / 1000
 
 
 picam2 = Picamera2()
@@ -37,7 +64,7 @@ end_timestamp = 0
 picam2.post_callback = post_callback
 
 picam2.video_configuration = picam2.create_video_configuration(
-    # Experiment with how different resolution affect frame drops
+    # Experiment with how different resolutions affect frame drops
     main={"size": (1920, 1080)}
 )
 
@@ -50,12 +77,12 @@ output = FfmpegOutput('test.mp4')
 fps = 50
 picam2.set_controls({"FrameRate": fps})
 
-picam2.start_recording(encoder, output, quality=Quality.LOW)
+picam2.start_recording(encoder, output)
 time.sleep(5)
 picam2.stop_recording()
 
 total_frames = num_frames + dropped_frames
-duration = (end_timestamp - start_timestamp) / 1e9
+duration = (end_timestamp - start_timestamp) / 1e6
 sensor_fps = total_frames / duration
 recorded_fps = num_frames / duration
 print("Total frames", total_frames)
